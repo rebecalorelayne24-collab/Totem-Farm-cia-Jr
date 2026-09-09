@@ -7,6 +7,10 @@
 <link rel="manifest" href="./manifest.json" />
 <meta name="theme-color" content="#2F80ED" />
 <link rel="apple-touch-icon" href="./icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Totem FJr" />
+<meta name="mobile-web-app-capable" content="yes" />
 <style>
   :root{
     --paper:#FFFFFF;
@@ -271,21 +275,19 @@ async function checkConnectivity(){
     clearTimeout(timer);
     const wasOffline = !online;
     online = true;
-    if(wasOffline) onConnectivityRestored();
+    if(wasOffline){ onConnectivityRestored(); render(); }
   }catch(e){
+    const wasOnline = online;
     online = false;
+    if(wasOnline) render();
   }
-  render();
 }
 
 async function onConnectivityRestored(){
-  // ao voltar a ficar online, primeiro "publica" o estoque local (fonte da verdade enquanto estava offline)
+  // ao voltar a ficar online, primeiro "publica" o que está local (fonte da verdade enquanto estava offline)
   for(const sv of state.catalog.souvenirs){ await syncUpsertSouvenir(sv); }
-  flushSyncQueue();
-  pullEstoque();
-  pullVendasRecentes();
-  pullJalecos();
-  pullPedidos();
+  syncUpsertCatalogo();
+  await syncTick();
 }
 
 function queueSync(path, method, body, extraHeaders){
@@ -297,6 +299,7 @@ function queueSync(path, method, body, extraHeaders){
 async function flushSyncQueue(){
   if(!online || syncingQueue) return;
   syncingQueue = true;
+  const tamanhoAntes = state.syncQueue.length;
   const remaining = [];
   for(const item of state.syncQueue){
     try{
@@ -306,15 +309,14 @@ async function flushSyncQueue(){
     }
   }
   state.syncQueue = remaining;
-  saveState();
   syncingQueue = false;
-  render();
+  if(remaining.length !== tamanhoAntes){ saveState(); render(); }
 }
 
 function categoriaFromSale(sale){
   const tipo = sale.items[0] && sale.items[0].meta && sale.items[0].meta.tipo;
   if(tipo==='acai') return 'Açaí';
-  if(tipo==='sude') return 'Sudê';
+  if(tipo==='sude') return 'Sundae';
   if(tipo==='souvenir') return 'Souvenir';
   if(tipo==='impressao') return 'Impressão';
   return 'Outro';
@@ -353,14 +355,11 @@ function pushPedido(p){
 function pushPedidoStatus(p){
   queueSync(`/rest/v1/pedidos?id=eq.${encodeURIComponent(p.id)}`, 'PATCH', {status: p.status});
 }
-async function syncUpsertSouvenir(sv){
-  try{
-    await sbFetch('/rest/v1/estoque_souvenirs?on_conflict=nome', {
-      method:'POST',
-      body: JSON.stringify({nome: sv.nome, preco: sv.preco, estoque: sv.estoque, desconto_membro: sv.descontoMembro}),
-      headers: {'Prefer':'resolution=merge-duplicates'}
-    });
-  }catch(e){ /* fica pra próxima sincronização periódica */ }
+function syncUpsertSouvenir(sv){
+  queueSync('/rest/v1/estoque_souvenirs?on_conflict=nome', 'POST',
+    {nome: sv.nome, preco: sv.preco, estoque: sv.estoque, desconto_membro: sv.descontoMembro},
+    {'Prefer':'resolution=merge-duplicates'}
+  );
 }
 // retorna true = ok, false = sem estoque no servidor, null = não deu pra confirmar (rede caiu no meio)
 async function syncDecrementEstoque(nome, qtd){
@@ -370,75 +369,150 @@ async function syncDecrementEstoque(nome, qtd){
   }catch(e){ return null; }
 }
 
+// ---- resto do Cardápio & Estoque (tamanhos/adicionais de açaí, sabores de sundae,
+// preços de impressão, preço e cadastro de jaleco) ----
+function syncUpsertCatalogo(){
+  queueSync('/rest/v1/catalogo_config?on_conflict=id', 'POST', {
+    id:'catalogo',
+    acai_tamanhos: state.catalog.acaiTamanhos,
+    acai_adicionais: state.catalog.acaiAdicionais,
+    sude_sabores: state.catalog.sudeSabores,
+    sude_preco: state.catalog.sudePreco,
+    impressao_pb_preco: state.catalog.impressaoPBPreco,
+    impressao_colorido_preco: state.catalog.impressaoColoridoPreco,
+    jaleco_preco: state.catalog.jalecoPreco,
+    jalecos_cadastro: state.jalecos.map(j=>({numero:j.numero, tamanho:j.tamanho}))
+  }, {'Prefer':'resolution=merge-duplicates'});
+}
+async function pullCatalogo(){
+  if(!online) return false;
+  try{
+    const pendente = state.syncQueue.some(item=>item.path.indexOf('/catalogo_config')>=0);
+    if(pendente) return false; // tem edição local ainda não confirmada, não sobrescreve agora
+    const rows = await sbFetch('/rest/v1/catalogo_config?id=eq.catalogo&select=*');
+    const r = rows && rows[0];
+    if(!r) return false;
+    let changed = false;
+    const c = state.catalog;
+    if(JSON.stringify(c.acaiTamanhos)!==JSON.stringify(r.acai_tamanhos)){ c.acaiTamanhos=r.acai_tamanhos; changed=true; }
+    if(JSON.stringify(c.acaiAdicionais)!==JSON.stringify(r.acai_adicionais)){ c.acaiAdicionais=r.acai_adicionais; changed=true; }
+    if(JSON.stringify(c.sudeSabores)!==JSON.stringify(r.sude_sabores)){ c.sudeSabores=r.sude_sabores; changed=true; }
+    if(c.sudePreco!==r.sude_preco){ c.sudePreco=r.sude_preco; changed=true; }
+    if(c.impressaoPBPreco!==r.impressao_pb_preco){ c.impressaoPBPreco=r.impressao_pb_preco; changed=true; }
+    if(c.impressaoColoridoPreco!==r.impressao_colorido_preco){ c.impressaoColoridoPreco=r.impressao_colorido_preco; changed=true; }
+    if(c.jalecoPreco!==r.jaleco_preco){ c.jalecoPreco=r.jaleco_preco; changed=true; }
+    (r.jalecos_cadastro||[]).forEach(rj=>{
+      if(!state.jalecos.find(j=>j.numero===rj.numero)){
+        state.jalecos.push({id:uid(), numero:rj.numero, tamanho:rj.tamanho, status:'disponivel', current:null, emprestimoId:null});
+        changed = true;
+      }
+    });
+    if(changed) saveState();
+    return changed;
+  }catch(e){ return false; }
+}
+
 async function pullEstoque(){
-  if(!online) return;
+  if(!online) return false;
   try{
     const rows = await sbFetch('/rest/v1/estoque_souvenirs?select=*');
+    // nomes com edição local ainda não confirmada no servidor: não sobrescrever agora, senão perde a edição
+    const nomesPendentes = new Set(
+      state.syncQueue
+        .filter(item=>item.path.indexOf('/estoque_souvenirs')>=0 && item.body && item.body.nome)
+        .map(item=>item.body.nome)
+    );
+    let changed = false;
     (rows||[]).forEach(r=>{
+      if(nomesPendentes.has(r.nome)) return;
       const local = state.catalog.souvenirs.find(s=>s.nome===r.nome);
-      if(local){ local.estoque=r.estoque; local.preco=r.preco; local.descontoMembro=r.desconto_membro; }
-      else { state.catalog.souvenirs.push({id:uid(), nome:r.nome, preco:r.preco, estoque:r.estoque, descontoMembro:r.desconto_membro}); }
+      if(local){
+        if(local.estoque!==r.estoque || local.preco!==r.preco || local.descontoMembro!==r.desconto_membro){
+          local.estoque=r.estoque; local.preco=r.preco; local.descontoMembro=r.desconto_membro;
+          changed = true;
+        }
+      } else {
+        state.catalog.souvenirs.push({id:uid(), nome:r.nome, preco:r.preco, estoque:r.estoque, descontoMembro:r.desconto_membro});
+        changed = true;
+      }
     });
-    saveState(); render();
-  }catch(e){}
+    if(changed) saveState();
+    return changed;
+  }catch(e){ return false; }
 }
 let lastVendaSync = null;
 async function pullVendasRecentes(){
-  if(!online) return;
+  if(!online) return false;
   try{
     const filtro = lastVendaSync ? `&created_at=gt.${encodeURIComponent(lastVendaSync)}` : '';
     const rows = await sbFetch(`/rest/v1/vendas?select=*&order=created_at.asc${filtro}`);
     const idsLocais = new Set(state.sales.map(s=>s.id));
+    let changed = false;
     (rows||[]).forEach(r=>{
+      lastVendaSync = r.created_at;
       if(idsLocais.has(r.id)) return;
       if(r.device_name === state.deviceName) return; // já é o nosso, não duplica
       state.sales.unshift({
         id:r.id, timestamp:r.created_at, items:r.payload||[{nome:r.descricao,qtd:1,preco:r.valor}],
         total:r.valor, formaPagamento:r.forma_pagamento, membro:r.membro, deviceName:r.device_name, remoto:true
       });
-      lastVendaSync = r.created_at;
+      changed = true;
     });
-    saveState();
-  }catch(e){}
+    if(changed) saveState();
+    return changed;
+  }catch(e){ return false; }
 }
 async function pullJalecos(){
-  if(!online) return;
+  if(!online) return false;
   try{
     const rows = await sbFetch('/rest/v1/jaleco_emprestimos?select=*&status=eq.emprestado');
+    let changed = false;
     (rows||[]).forEach(r=>{
       const j = state.jalecos.find(x=>x.numero===r.numero);
       if(j && j.status!=='emprestado' && r.device_name!==state.deviceName){
         j.status='emprestado'; j.emprestimoId=r.id;
         j.current = {nome:r.nome_cliente, telefone:r.telefone, periodo:r.periodo, pagamento:r.pagamento,
           formaPagamento:r.forma_pagamento, horaRetirada:r.hora_retirada, horaPrevista:r.hora_prevista, valor:r.valor};
+        changed = true;
       }
     });
-    saveState(); render();
-  }catch(e){}
+    if(changed) saveState();
+    return changed;
+  }catch(e){ return false; }
 }
 async function pullPedidos(){
-  if(!online) return;
+  if(!online) return false;
   try{
     const rows = await sbFetch('/rest/v1/pedidos?select=*');
     const idsLocais = new Set(state.pedidosSouvenir.map(p=>p.id));
+    let changed = false;
     (rows||[]).forEach(r=>{
       if(idsLocais.has(r.id)){
         const local = state.pedidosSouvenir.find(p=>p.id===r.id);
-        if(local) local.status = r.status;
+        if(local && local.status!==r.status){ local.status = r.status; changed = true; }
         return;
       }
       if(r.device_name===state.deviceName) return;
       state.pedidosSouvenir.push({id:r.id, nome:r.nome_cliente, telefone:r.telefone, itens:r.itens, status:r.status, criadoEm:r.created_at});
+      changed = true;
     });
-    saveState(); render();
-  }catch(e){}
+    if(changed) saveState();
+    return changed;
+  }catch(e){ return false; }
+}
+
+async function syncTick(){
+  if(!online) return;
+  await flushSyncQueue();
+  const resultados = await Promise.all([pullEstoque(), pullVendasRecentes(), pullJalecos(), pullPedidos(), pullCatalogo()]);
+  if(resultados.some(Boolean)) render();
 }
 
 window.addEventListener('online', checkConnectivity);
 window.addEventListener('offline', ()=>{ online=false; render(); });
 checkConnectivity();
-setInterval(checkConnectivity, 15000);
-setInterval(()=>{ if(online){ flushSyncQueue(); pullEstoque(); pullVendasRecentes(); pullJalecos(); pullPedidos(); } }, 12000);
+setInterval(checkConnectivity, 20000);
+setInterval(syncTick, 15000);
 
 let estoqueUnlocked = false;
 function setTab(tab){
@@ -542,8 +616,8 @@ function addAcaiToCart(){
 function selectSabor(id){ builderSude.saborId = id; render(); }
 function addSudeToCart(){
   const s = state.catalog.sudeSabores.find(x=>x.id===builderSude.saborId);
-  if(!s){ flashError('Escolha um sabor de sudê.'); return; }
-  addToCart({nome:`Sudê ${s.nome}`, preco: state.catalog.sudePreco, meta:{tipo:'sude'}});
+  if(!s){ flashError('Escolha um sabor de sundae.'); return; }
+  addToCart({nome:`Sundae ${s.nome}`, preco: state.catalog.sudePreco, meta:{tipo:'sude'}});
   builderSude = {saborId:null};
 }
 
@@ -565,8 +639,9 @@ function addJaleco(numero, tamanho){
   if(!numero) { flashError('Informe o número do jaleco.'); return; }
   state.jalecos.push({id:uid(), numero, tamanho: tamanho||'-', status:'disponivel', current:null});
   saveState(); render();
+  if(isOnline()) syncUpsertCatalogo();
 }
-function removeJaleco(id){ state.jalecos = state.jalecos.filter(j=>j.id!==id); saveState(); render(); }
+function removeJaleco(id){ state.jalecos = state.jalecos.filter(j=>j.id!==id); saveState(); render(); if(isOnline()) syncUpsertCatalogo(); }
 
 function submitEmprestimo(jalecoId, data){
   const j = state.jalecos.find(x=>x.id===jalecoId);
@@ -628,23 +703,26 @@ function addTamanhoAcai(nome, preco){
   if(!nome) return;
   state.catalog.acaiTamanhos.push({id:uid(), nome, preco:Number(preco)||0});
   saveState(); render();
+  if(isOnline()) syncUpsertCatalogo();
 }
-function removeTamanhoAcai(id){ state.catalog.acaiTamanhos = state.catalog.acaiTamanhos.filter(x=>x.id!==id); saveState(); render(); }
+function removeTamanhoAcai(id){ state.catalog.acaiTamanhos = state.catalog.acaiTamanhos.filter(x=>x.id!==id); saveState(); render(); if(isOnline()) syncUpsertCatalogo(); }
 function addAdicionalAcai(nome, preco){
   if(!nome) return;
   state.catalog.acaiAdicionais.push({id:uid(), nome, preco:Number(preco)||0});
   saveState(); render();
+  if(isOnline()) syncUpsertCatalogo();
 }
-function removeAdicionalAcai(id){ state.catalog.acaiAdicionais = state.catalog.acaiAdicionais.filter(x=>x.id!==id); saveState(); render(); }
+function removeAdicionalAcai(id){ state.catalog.acaiAdicionais = state.catalog.acaiAdicionais.filter(x=>x.id!==id); saveState(); render(); if(isOnline()) syncUpsertCatalogo(); }
 function addSaborSude(nome){
   if(!nome) return;
   state.catalog.sudeSabores.push({id:uid(), nome});
   saveState(); render();
+  if(isOnline()) syncUpsertCatalogo();
 }
-function removeSaborSude(id){ state.catalog.sudeSabores = state.catalog.sudeSabores.filter(x=>x.id!==id); saveState(); render(); }
-function updateSudePreco(v){ state.catalog.sudePreco = Number(v)||0; saveState(); }
-function updateImpressaoPreco(field, v){ state.catalog.impressaoColoridoPreco = field==='colorido'? (Number(v)||0) : state.catalog.impressaoColoridoPreco; if(field==='pb') state.catalog.impressaoPBPreco = Number(v)||0; saveState(); }
-function updateJalecoPreco(v){ state.catalog.jalecoPreco = Number(v)||0; saveState(); render(); }
+function removeSaborSude(id){ state.catalog.sudeSabores = state.catalog.sudeSabores.filter(x=>x.id!==id); saveState(); render(); if(isOnline()) syncUpsertCatalogo(); }
+function updateSudePreco(v){ state.catalog.sudePreco = Number(v)||0; saveState(); if(isOnline()) syncUpsertCatalogo(); }
+function updateImpressaoPreco(field, v){ state.catalog.impressaoColoridoPreco = field==='colorido'? (Number(v)||0) : state.catalog.impressaoColoridoPreco; if(field==='pb') state.catalog.impressaoPBPreco = Number(v)||0; saveState(); if(isOnline()) syncUpsertCatalogo(); }
+function updateJalecoPreco(v){ state.catalog.jalecoPreco = Number(v)||0; saveState(); render(); if(isOnline()) syncUpsertCatalogo(); }
 function updateEstoqueSenha(v){ state.catalog.estoqueSenha = String(v||'').trim() || '1234'; saveState(); flashOk('Senha atualizada.'); }
 function tentarDesbloquearEstoque(){
   const el = document.getElementById('estoqueSenhaInput');
@@ -908,7 +986,7 @@ function renderHeader(){
 
 function renderTabs(){
   const tabs = [
-    {id:'vendas', label:'Açaí & Sudê'},
+    {id:'vendas', label:'Açaí & Sundae'},
     {id:'souvenirs', label:'Souvenirs'},
     {id:'jaleco', label:'Jaleco'},
     {id:'impressao', label:'Impressão'},
@@ -959,7 +1037,7 @@ function renderVendas(){
   }
 
   // SUDÊ
-  html += `<div class="section-title" style="margin-top:22px;">🍮 Sudê</div>`;
+  html += `<div class="section-title" style="margin-top:22px;">🍮 Sundae</div>`;
   if(c.sudeSabores.length===0){
     html += `<div class="muted" style="margin-bottom:14px;">Nenhum sabor cadastrado. Vá em "Cardápio & Estoque".</div>`;
   } else {
@@ -1104,13 +1182,13 @@ function renderCardapio(){
     <button class="btn btn-dark" data-action="addAdicionalBtn">+ Adicionar</button>
   </div>`;
 
-  html += `<div class="muted" style="margin-bottom:6px;font-weight:700;">Sabores de sudê</div>`;
+  html += `<div class="muted" style="margin-bottom:6px;font-weight:700;">Sabores de sundae</div>`;
   html += renderEditableList(c.sudeSabores, 'removeSaborSude', false);
   html += `<div class="row" style="margin-bottom:10px;">
     <div class="field"><label>Novo sabor</label><input type="text" id="novoSaborNome" placeholder="Ex: Maracujá"></div>
     <button class="btn btn-dark" data-action="addSaborBtn">+ Adicionar</button>
   </div>`;
-  html += `<div class="field" style="max-width:200px;margin-bottom:22px;"><label>Preço único do sudê</label>
+  html += `<div class="field" style="max-width:200px;margin-bottom:22px;"><label>Preço único do sundae</label>
     <input type="number" step="0.01" value="${c.sudePreco}" data-action-change="updateSudePreco"></div>`;
 
   html += `<div class="muted" style="margin-bottom:6px;font-weight:700;">Preços de impressão</div>`;
@@ -1218,7 +1296,7 @@ function renderFechamento(){
   html += `<div class="field" style="max-width:300px;"><label>Este aparelho é responsável por</label>
     <select data-action-change="setResponsabilidade">
       <option value="" ${!state.responsabilidade?'selected':''}>Não definido</option>
-      <option value="Açaí & Sudê" ${state.responsabilidade==='Açaí & Sudê'?'selected':''}>Açaí & Sudê</option>
+      <option value="Açaí & Sundae" ${state.responsabilidade==='Açaí & Sundae'?'selected':''}>Açaí & Sundae</option>
       <option value="Souvenirs" ${state.responsabilidade==='Souvenirs'?'selected':''}>Souvenirs</option>
       <option value="Jaleco" ${state.responsabilidade==='Jaleco'?'selected':''}>Jaleco</option>
       <option value="Impressão" ${state.responsabilidade==='Impressão'?'selected':''}>Impressão</option>
