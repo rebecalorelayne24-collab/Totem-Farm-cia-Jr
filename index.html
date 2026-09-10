@@ -286,7 +286,16 @@ async function checkConnectivity(){
 async function onConnectivityRestored(){
   // ao voltar a ficar online, primeiro "publica" o que está local (fonte da verdade enquanto estava offline)
   for(const sv of state.catalog.souvenirs){ await syncUpsertSouvenir(sv); }
-  syncUpsertCatalogo();
+  syncUpsertCatalogo({
+    acai_tamanhos: state.catalog.acaiTamanhos,
+    acai_adicionais: state.catalog.acaiAdicionais,
+    sude_sabores: state.catalog.sudeSabores,
+    sude_preco: state.catalog.sudePreco,
+    impressao_pb_preco: state.catalog.impressaoPBPreco,
+    impressao_colorido_preco: state.catalog.impressaoColoridoPreco,
+    jaleco_preco: state.catalog.jalecoPreco,
+    jalecos_cadastro: state.jalecos.map(j=>({numero:j.numero, tamanho:j.tamanho}))
+  });
   await syncTick();
 }
 
@@ -371,18 +380,23 @@ async function syncDecrementEstoque(nome, qtd){
 
 // ---- resto do Cardápio & Estoque (tamanhos/adicionais de açaí, sabores de sundae,
 // preços de impressão, preço e cadastro de jaleco) ----
-function syncUpsertCatalogo(){
-  queueSync('/rest/v1/catalogo_config?on_conflict=id', 'POST', {
-    id:'catalogo',
-    acai_tamanhos: state.catalog.acaiTamanhos,
-    acai_adicionais: state.catalog.acaiAdicionais,
-    sude_sabores: state.catalog.sudeSabores,
-    sude_preco: state.catalog.sudePreco,
-    impressao_pb_preco: state.catalog.impressaoPBPreco,
-    impressao_colorido_preco: state.catalog.impressaoColoridoPreco,
-    jaleco_preco: state.catalog.jalecoPreco,
-    jalecos_cadastro: state.jalecos.map(j=>({numero:j.numero, tamanho:j.tamanho}))
-  }, {'Prefer':'resolution=merge-duplicates'});
+// Envia só os campos passados (PATCH parcial) pra edição de um aparelho nunca apagar
+// o que outro aparelho salvou em outro campo. Garante que a linha existe antes.
+let catalogoRowGarantida = false;
+async function garantirLinhaCatalogo(){
+  if(catalogoRowGarantida) return;
+  try{
+    await sbFetch('/rest/v1/catalogo_config?on_conflict=id', {
+      method:'POST',
+      body: JSON.stringify({id:'catalogo'}),
+      headers: {'Prefer':'resolution=ignore-duplicates'}
+    });
+    catalogoRowGarantida = true;
+  }catch(e){}
+}
+async function syncUpsertCatalogo(campos){
+  await garantirLinhaCatalogo();
+  queueSync('/rest/v1/catalogo_config?id=eq.catalogo', 'PATCH', campos);
 }
 async function pullCatalogo(){
   if(!online) return false;
@@ -639,9 +653,9 @@ function addJaleco(numero, tamanho){
   if(!numero) { flashError('Informe o número do jaleco.'); return; }
   state.jalecos.push({id:uid(), numero, tamanho: tamanho||'-', status:'disponivel', current:null});
   saveState(); render();
-  if(isOnline()) syncUpsertCatalogo();
+  if(isOnline()) syncUpsertCatalogo({jalecos_cadastro: state.jalecos.map(j=>({numero:j.numero, tamanho:j.tamanho}))});
 }
-function removeJaleco(id){ state.jalecos = state.jalecos.filter(j=>j.id!==id); saveState(); render(); if(isOnline()) syncUpsertCatalogo(); }
+function removeJaleco(id){ state.jalecos = state.jalecos.filter(j=>j.id!==id); saveState(); render(); if(isOnline()) syncUpsertCatalogo({jalecos_cadastro: state.jalecos.map(j=>({numero:j.numero, tamanho:j.tamanho}))}); }
 
 function submitEmprestimo(jalecoId, data){
   const j = state.jalecos.find(x=>x.id===jalecoId);
@@ -703,26 +717,26 @@ function addTamanhoAcai(nome, preco){
   if(!nome) return;
   state.catalog.acaiTamanhos.push({id:uid(), nome, preco:Number(preco)||0});
   saveState(); render();
-  if(isOnline()) syncUpsertCatalogo();
+  if(isOnline()) syncUpsertCatalogo({acai_tamanhos: state.catalog.acaiTamanhos});
 }
-function removeTamanhoAcai(id){ state.catalog.acaiTamanhos = state.catalog.acaiTamanhos.filter(x=>x.id!==id); saveState(); render(); if(isOnline()) syncUpsertCatalogo(); }
+function removeTamanhoAcai(id){ state.catalog.acaiTamanhos = state.catalog.acaiTamanhos.filter(x=>x.id!==id); saveState(); render(); if(isOnline()) syncUpsertCatalogo({acai_tamanhos: state.catalog.acaiTamanhos}); }
 function addAdicionalAcai(nome, preco){
   if(!nome) return;
   state.catalog.acaiAdicionais.push({id:uid(), nome, preco:Number(preco)||0});
   saveState(); render();
-  if(isOnline()) syncUpsertCatalogo();
+  if(isOnline()) syncUpsertCatalogo({acai_adicionais: state.catalog.acaiAdicionais});
 }
-function removeAdicionalAcai(id){ state.catalog.acaiAdicionais = state.catalog.acaiAdicionais.filter(x=>x.id!==id); saveState(); render(); if(isOnline()) syncUpsertCatalogo(); }
+function removeAdicionalAcai(id){ state.catalog.acaiAdicionais = state.catalog.acaiAdicionais.filter(x=>x.id!==id); saveState(); render(); if(isOnline()) syncUpsertCatalogo({acai_adicionais: state.catalog.acaiAdicionais}); }
 function addSaborSude(nome){
   if(!nome) return;
   state.catalog.sudeSabores.push({id:uid(), nome});
   saveState(); render();
-  if(isOnline()) syncUpsertCatalogo();
+  if(isOnline()) syncUpsertCatalogo({sude_sabores: state.catalog.sudeSabores});
 }
-function removeSaborSude(id){ state.catalog.sudeSabores = state.catalog.sudeSabores.filter(x=>x.id!==id); saveState(); render(); if(isOnline()) syncUpsertCatalogo(); }
-function updateSudePreco(v){ state.catalog.sudePreco = Number(v)||0; saveState(); if(isOnline()) syncUpsertCatalogo(); }
-function updateImpressaoPreco(field, v){ state.catalog.impressaoColoridoPreco = field==='colorido'? (Number(v)||0) : state.catalog.impressaoColoridoPreco; if(field==='pb') state.catalog.impressaoPBPreco = Number(v)||0; saveState(); if(isOnline()) syncUpsertCatalogo(); }
-function updateJalecoPreco(v){ state.catalog.jalecoPreco = Number(v)||0; saveState(); render(); if(isOnline()) syncUpsertCatalogo(); }
+function removeSaborSude(id){ state.catalog.sudeSabores = state.catalog.sudeSabores.filter(x=>x.id!==id); saveState(); render(); if(isOnline()) syncUpsertCatalogo({sude_sabores: state.catalog.sudeSabores}); }
+function updateSudePreco(v){ state.catalog.sudePreco = Number(v)||0; saveState(); if(isOnline()) syncUpsertCatalogo({sude_preco: state.catalog.sudePreco}); }
+function updateImpressaoPreco(field, v){ state.catalog.impressaoColoridoPreco = field==='colorido'? (Number(v)||0) : state.catalog.impressaoColoridoPreco; if(field==='pb') state.catalog.impressaoPBPreco = Number(v)||0; saveState(); if(isOnline()) syncUpsertCatalogo(field==='colorido' ? {impressao_colorido_preco: state.catalog.impressaoColoridoPreco} : {impressao_pb_preco: state.catalog.impressaoPBPreco}); }
+function updateJalecoPreco(v){ state.catalog.jalecoPreco = Number(v)||0; saveState(); render(); if(isOnline()) syncUpsertCatalogo({jaleco_preco: state.catalog.jalecoPreco}); }
 function updateEstoqueSenha(v){ state.catalog.estoqueSenha = String(v||'').trim() || '1234'; saveState(); flashOk('Senha atualizada.'); }
 function tentarDesbloquearEstoque(){
   const el = document.getElementById('estoqueSenhaInput');
