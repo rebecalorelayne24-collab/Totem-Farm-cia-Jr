@@ -86,6 +86,7 @@
   .btn-dark{background:var(--ink);border-color:var(--ink);color:#fff;}
   .btn-sage{background:var(--sage);border-color:var(--sage);color:#fff;}
   .btn-ghost{background:transparent;border-color:transparent;color:var(--ink-soft);}
+  .btn-danger{background:#D64545;border-color:#D64545;color:#fff;}
   .btn-sm{padding:6px 10px;font-size:.72rem;}
   .btn:disabled{opacity:.4;cursor:not-allowed;transform:none;}
   .btn-block{width:100%;}
@@ -186,6 +187,7 @@ function defaultState(){
     deviceName: '',
     activeTab: 'vendas',
     membroAtivo: false,
+    clienteNomeAtual: '',
     cart: [],
     modal: null,
     jalecoHistoricoAberto: false,
@@ -336,6 +338,7 @@ function pushVenda(sale){
     id: sale.id, device_name: sale.deviceName, categoria: categoriaFromSale(sale),
     descricao: sale.items.map(i=>`${i.qtd}x ${i.nome}`).join(', '),
     forma_pagamento: sale.formaPagamento, membro: sale.membro, valor: sale.total,
+    cliente_nome: sale.clienteNome || null,
     payload: sale.items
   });
 }
@@ -411,10 +414,10 @@ async function pullCatalogo(){
     if(JSON.stringify(c.acaiTamanhos)!==JSON.stringify(r.acai_tamanhos)){ c.acaiTamanhos=r.acai_tamanhos; changed=true; }
     if(JSON.stringify(c.acaiAdicionais)!==JSON.stringify(r.acai_adicionais)){ c.acaiAdicionais=r.acai_adicionais; changed=true; }
     if(JSON.stringify(c.sudeSabores)!==JSON.stringify(r.sude_sabores)){ c.sudeSabores=r.sude_sabores; changed=true; }
-    if(c.sudePreco!==r.sude_preco){ c.sudePreco=r.sude_preco; changed=true; }
-    if(c.impressaoPBPreco!==r.impressao_pb_preco){ c.impressaoPBPreco=r.impressao_pb_preco; changed=true; }
-    if(c.impressaoColoridoPreco!==r.impressao_colorido_preco){ c.impressaoColoridoPreco=r.impressao_colorido_preco; changed=true; }
-    if(c.jalecoPreco!==r.jaleco_preco){ c.jalecoPreco=r.jaleco_preco; changed=true; }
+    if(c.sudePreco!==Number(r.sude_preco)){ c.sudePreco=Number(r.sude_preco); changed=true; }
+    if(c.impressaoPBPreco!==Number(r.impressao_pb_preco)){ c.impressaoPBPreco=Number(r.impressao_pb_preco); changed=true; }
+    if(c.impressaoColoridoPreco!==Number(r.impressao_colorido_preco)){ c.impressaoColoridoPreco=Number(r.impressao_colorido_preco); changed=true; }
+    if(c.jalecoPreco!==Number(r.jaleco_preco)){ c.jalecoPreco=Number(r.jaleco_preco); changed=true; }
     (r.jalecos_cadastro||[]).forEach(rj=>{
       if(!state.jalecos.find(j=>j.numero===rj.numero)){
         state.jalecos.push({id:uid(), numero:rj.numero, tamanho:rj.tamanho, status:'disponivel', current:null, emprestimoId:null});
@@ -439,6 +442,7 @@ async function pullEstoque(){
     let changed = false;
     (rows||[]).forEach(r=>{
       if(nomesPendentes.has(r.nome)) return;
+      r = Object.assign({}, r, {preco:Number(r.preco), desconto_membro:Number(r.desconto_membro)});
       const local = state.catalog.souvenirs.find(s=>s.nome===r.nome);
       if(local){
         if(local.estoque!==r.estoque || local.preco!==r.preco || local.descontoMembro!==r.desconto_membro){
@@ -468,7 +472,7 @@ async function pullVendasRecentes(){
       if(r.device_name === state.deviceName) return; // já é o nosso, não duplica
       state.sales.unshift({
         id:r.id, timestamp:r.created_at, items:r.payload||[{nome:r.descricao,qtd:1,preco:r.valor}],
-        total:r.valor, formaPagamento:r.forma_pagamento, membro:r.membro, deviceName:r.device_name, remoto:true
+        total:r.valor, formaPagamento:r.forma_pagamento, membro:r.membro, clienteNome:r.cliente_nome||null, deviceName:r.device_name, remoto:true
       });
       changed = true;
     });
@@ -589,10 +593,12 @@ async function finalizarVenda(formaPagamento){
     total: cartTotal(),
     formaPagamento,
     membro: state.membroAtivo,
+    clienteNome: (state.clienteNomeAtual||'').trim() || null,
     deviceName: state.deviceName || '(sem nome)'
   };
   state.sales.unshift(sale);
   state.cart = [];
+  state.clienteNomeAtual = '';
   saveState(); render();
   pushVenda(sale);
   flashOk('Venda finalizada!');
@@ -912,7 +918,9 @@ function downloadCSVFechamento(){
   const a = document.createElement('a');
   a.href = url; a.download = `fechamento_caixa_${todayStr()}.csv`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  // libera a URL só depois de um tempo — revogar na hora pode travar o download
+  // no Chrome/Android quando o app está instalado (tela de download fica presa)
+  setTimeout(()=>URL.revokeObjectURL(url), 3000);
 }
 
 /* ============================= BACKUP ============================= */
@@ -924,7 +932,7 @@ function exportBackup(){
   const safeName = (state.deviceName||'aparelho').replace(/[^a-z0-9]/gi,'_');
   a.href = url; a.download = `backup_totem_${safeName}_${todayStr()}_${Date.now()}.json`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  setTimeout(()=>URL.revokeObjectURL(url), 3000);
 }
 function importBackup(fileInput){
   const file = fileInput.files && fileInput.files[0];
@@ -1006,6 +1014,7 @@ function renderTabs(){
     {id:'impressao', label:'Impressão'},
     {id:'cardapio', label:'Cardápio & Estoque'},
     {id:'pedidos', label:'Pedidos'},
+    {id:'historico', label:'Histórico'},
     {id:'fechamento', label:'Fechamento'}
   ];
   return `<div class="tabs">${tabs.map(t=>`
@@ -1021,10 +1030,85 @@ function renderActiveTab(){
     case 'impressao': return renderImpressao();
     case 'cardapio': return renderCardapio();
     case 'pedidos': return renderPedidos();
+    case 'historico': return renderHistorico();
     case 'fechamento': return renderFechamento();
     default: return '';
   }
 }
+
+function salesForHistorico(){
+  const modo = state.historicoModo || 'dia';
+  if(modo==='mes'){
+    const alvo = state.historicoMes || todayStr().slice(0,7);
+    return state.sales.filter(s=>s.timestamp && s.timestamp.slice(0,7)===alvo);
+  }
+  const alvo = state.historicoData || todayStr();
+  return state.sales.filter(s=>s.timestamp && s.timestamp.slice(0,10)===alvo);
+}
+
+function renderHistorico(){
+  const modo = state.historicoModo || 'dia';
+  const dataAtual = state.historicoData || todayStr();
+  const mesAtual = state.historicoMes || todayStr().slice(0,7);
+  const vendas = salesForHistorico();
+  const totalPeriodo = vendas.reduce((a,s)=>a+s.total,0);
+
+  let html = `<div class="section-title">🧾 Histórico de vendas</div>`;
+  html += `<div class="row" style="gap:8px;margin-bottom:10px;">
+    <button class="btn btn-sm ${modo==='dia'?'btn-dark':''}" data-action="setHistoricoModo" data-modo="dia">Por dia</button>
+    <button class="btn btn-sm ${modo==='mes'?'btn-dark':''}" data-action="setHistoricoModo" data-modo="mes">Por mês</button>
+  </div>`;
+  if(modo==='mes'){
+    html += `<div class="field" style="max-width:220px;"><input type="month" value="${mesAtual}" data-action-change="setHistoricoMes"></div>`;
+  } else {
+    html += `<div class="field" style="max-width:220px;"><input type="date" value="${dataAtual}" data-action-change="setHistoricoData"></div>`;
+  }
+  html += `<div class="muted" style="margin:8px 0 14px;">${vendas.length} venda(s) · Total: <b>${brl(totalPeriodo)}</b></div>`;
+
+  if(vendas.length===0){ html += `<div class="empty-state">Nenhuma venda registrada nesse período.</div>`; return html; }
+
+  html += vendas.map(s=>`
+    <div class="jaleco-row" style="flex-direction:column;align-items:stretch;">
+      <div style="display:flex;justify-content:space-between;align-items:start;">
+        <div>
+          <b>${modo==='mes'? fmtDateTime(s.timestamp) : fmtTime(s.timestamp)}</b> — ${s.formaPagamento==='pix'?'Pix':'Dinheiro'}${s.membro?' · Membro':''}
+          ${s.clienteNome? `<div class="muted" style="margin-top:2px;">Comprador: ${escapeHtml(s.clienteNome)}</div>` : ''}
+        </div>
+        <b>${brl(s.total)}</b>
+      </div>
+      <div class="muted" style="margin-top:6px;font-size:.85rem;">
+        ${s.items.map(i=>`${i.qtd}x ${escapeHtml(i.nome)}`).join(', ')}
+      </div>
+      <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center;">
+        <span class="muted" style="font-size:.72rem;">${escapeHtml(s.deviceName||'')}${s.remoto?' · sincronizada':''}</span>
+        <button class="btn btn-sm btn-danger" data-action="pedirExclusaoVenda" data-id="${s.id}">🗑️ Apagar</button>
+      </div>
+    </div>
+  `).join('');
+  return html;
+}
+
+function pedirExclusaoVenda(saleId){ openModal('confirmarExclusaoVenda', {saleId}); }
+
+function excluirVenda(saleId){
+  const venda = state.sales.find(s=>s.id===saleId);
+  if(!venda) return;
+  // devolve estoque de souvenirs dessa venda
+  venda.items.forEach(item=>{
+    if(item.meta && item.meta.tipo==='souvenir'){
+      const sv = state.catalog.souvenirs.find(s=>s.nome===item.nome);
+      if(sv){
+        sv.estoque += item.qtd;
+        if(isOnline()) syncUpsertSouvenir(sv);
+      }
+    }
+  });
+  state.sales = state.sales.filter(s=>s.id!==saleId);
+  closeModal(); saveState(); render();
+  if(isOnline()) queueSync(`/rest/v1/vendas?id=eq.${encodeURIComponent(saleId)}`, 'DELETE');
+  flashOk('Venda apagada.');
+}
+
 
 /* ============================= RENDER: VENDAS (Açaí & Sudê) ============================= */
 function renderVendas(){
@@ -1161,408 +1245,4 @@ function renderImpressao(){
       <button class="btn ${window.__tipoImpressao!=='cor'?'btn-dark':''}" data-action="setTipoImpressao" data-tipo="pb">P&B ${membro?'· Grátis':'· '+brl(state.catalog.impressaoPBPreco)+'/pág'}</button>
       <button class="btn ${window.__tipoImpressao==='cor'?'btn-dark':''}" data-action="setTipoImpressao" data-tipo="cor">Colorido · ${brl(state.catalog.impressaoColoridoPreco)}/pág</button>
     </div>
-    ${!membro? `<div class="field"><label>Nome (cliente externo)</label><input type="text" id="nomeExternoImpressao" placeholder="Nome do aluno"></div>` : ''}
-    <button class="btn btn-primary btn-block" data-action="addImpressaoBtn">Adicionar ao carrinho</button>
-  </div>`;
-}
-
-/* ============================= RENDER: CARDÁPIO / ESTOQUE ============================= */
-function renderCardapio(){
-  const c = state.catalog;
-  if(!estoqueUnlocked){
-    return `<div style="max-width:320px;margin:30px auto;text-align:center;">
-      <div style="font-size:2rem;margin-bottom:6px;">🔒</div>
-      <div class="section-title" style="justify-content:center;">Área protegida</div>
-      <div class="muted" style="margin-bottom:14px;">Digite a senha pra acessar o Cardápio & Estoque.</div>
-      <div class="field"><input type="password" id="estoqueSenhaInput" placeholder="Senha" autofocus onkeydown="if(event.key==='Enter'){tentarDesbloquearEstoque();}"></div>
-      <button class="btn btn-primary btn-block" data-action="tentarDesbloquearEstoque">Entrar</button>
-    </div>`;
-  }
-  let html = `<div class="section-title">📋 Cardápio</div>`;
-
-  html += `<div class="muted" style="margin-bottom:6px;font-weight:700;">Tamanhos de açaí</div>`;
-  html += renderEditableList(c.acaiTamanhos, 'removeTamanhoAcai', true);
-  html += `<div class="row" style="margin-bottom:18px;">
-    <div class="field"><label>Novo tamanho</label><input type="text" id="novoTamanhoNome" placeholder="Ex: 500ml"></div>
-    <div class="field" style="max-width:120px;"><label>Preço</label><input type="number" step="0.01" id="novoTamanhoPreco"></div>
-    <button class="btn btn-dark" data-action="addTamanhoBtn">+ Adicionar</button>
-  </div>`;
-
-  html += `<div class="muted" style="margin-bottom:6px;font-weight:700;">Adicionais de açaí</div>`;
-  html += renderEditableList(c.acaiAdicionais, 'removeAdicionalAcai', true);
-  html += `<div class="row" style="margin-bottom:18px;">
-    <div class="field"><label>Novo adicional</label><input type="text" id="novoAdicionalNome" placeholder="Ex: Nutella"></div>
-    <div class="field" style="max-width:120px;"><label>Preço</label><input type="number" step="0.01" id="novoAdicionalPreco"></div>
-    <button class="btn btn-dark" data-action="addAdicionalBtn">+ Adicionar</button>
-  </div>`;
-
-  html += `<div class="muted" style="margin-bottom:6px;font-weight:700;">Sabores de sundae</div>`;
-  html += renderEditableList(c.sudeSabores, 'removeSaborSude', false);
-  html += `<div class="row" style="margin-bottom:10px;">
-    <div class="field"><label>Novo sabor</label><input type="text" id="novoSaborNome" placeholder="Ex: Maracujá"></div>
-    <button class="btn btn-dark" data-action="addSaborBtn">+ Adicionar</button>
-  </div>`;
-  html += `<div class="field" style="max-width:200px;margin-bottom:22px;"><label>Preço único do sundae</label>
-    <input type="number" step="0.01" value="${c.sudePreco}" data-action-change="updateSudePreco"></div>`;
-
-  html += `<div class="muted" style="margin-bottom:6px;font-weight:700;">Preços de impressão</div>`;
-  html += `<div class="row" style="margin-bottom:22px;">
-    <div class="field" style="max-width:200px;"><label>Colorido (por página)</label><input type="number" step="0.01" value="${c.impressaoColoridoPreco}" data-action-change="updateImpressaoColorido"></div>
-    <div class="field" style="max-width:220px;"><label>P&B externo (por página)</label><input type="number" step="0.01" value="${c.impressaoPBPreco}" data-action-change="updateImpressaoPB"></div>
-    <div class="muted" style="align-self:center;">P&B de membro é sempre grátis.</div>
-  </div>`;
-
-  html += `<div class="muted" style="margin-bottom:6px;font-weight:700;">Empréstimo de jaleco</div>`;
-  html += `<div class="row" style="margin-bottom:22px;">
-    <div class="field" style="max-width:200px;"><label>Valor do empréstimo (R$)</label><input type="number" step="0.01" value="${c.jalecoPreco}" data-action-change="updateJalecoPreco"></div>
-  </div>`;
-
-  html += `<div class="muted" style="margin-bottom:6px;font-weight:700;">Segurança</div>`;
-  html += `<div class="row" style="margin-bottom:22px;">
-    <div class="field" style="max-width:200px;"><label>Senha desta aba</label><input type="password" value="${escapeHtml(c.estoqueSenha)}" data-action-change="updateEstoqueSenha"></div>
-    <div class="muted" style="align-self:center;">Pedida toda vez que alguém abrir "Cardápio & Estoque".</div>
-  </div>`;
-
-  html += `<div class="section-title">📦 Estoque de souvenirs</div>`;
-  html += `<div class="muted" style="margin-bottom:8px;">Envie um CSV com colunas: <b>Nome</b>, <b>Preço</b>, <b>Estoque</b>, <b>Desconto Membro (%)</b> (opcional). O upload substitui a lista atual.</div>`;
-  html += `<label class="btn btn-dark" style="display:inline-flex;align-items:center;gap:6px;margin-bottom:14px;">
-    ⬆ Enviar CSV<input type="file" accept=".csv" style="display:none" id="souvenirCsvInput" data-action-change="uploadSouvenirCsv">
-  </label>`;
-
-  if(c.souvenirs.length>0){
-    html += `<table><thead><tr><th>Item</th><th>Preço</th><th>Estoque</th><th>Desc. membro (%)</th><th></th></tr></thead><tbody>`;
-    html += c.souvenirs.map(sv=>`<tr>
-      <td>${escapeHtml(sv.nome)}</td>
-      <td><input type="number" step="0.01" style="width:80px;" value="${sv.preco}" data-action-change="updateSouvenirPreco" data-id="${sv.id}"></td>
-      <td>
-        <div class="qty-ctrl">
-          <button data-action="adjustEstoque" data-id="${sv.id}" data-delta="-1">−</button>
-          <span class="mono">${sv.estoque}</span>
-          <button data-action="adjustEstoque" data-id="${sv.id}" data-delta="1">+</button>
-        </div>
-      </td>
-      <td><input type="number" step="1" style="width:64px;" value="${sv.descontoMembro}" data-action-change="updateSouvenirDesconto" data-id="${sv.id}"></td>
-      <td><button class="btn btn-sm btn-ghost" data-action="removeSouvenirBtn" data-id="${sv.id}">🗑</button></td>
-    </tr>`).join('');
-    html += `</tbody></table>`;
-  }
-  html += `<div class="row" style="margin-top:12px;">
-    <div class="field"><label>Nome</label><input type="text" id="novoSouvenirNome"></div>
-    <div class="field" style="max-width:100px;"><label>Preço</label><input type="number" step="0.01" id="novoSouvenirPreco"></div>
-    <div class="field" style="max-width:100px;"><label>Estoque</label><input type="number" id="novoSouvenirEstoque"></div>
-    <div class="field" style="max-width:100px;"><label>Desc. (%)</label><input type="number" id="novoSouvenirDesconto" value="0"></div>
-    <button class="btn btn-dark" data-action="addSouvenirBtn">+ Adicionar</button>
-  </div>`;
-
-  return html;
-}
-function renderEditableList(items, removeAction, showPrice){
-  if(items.length===0) return `<div class="muted" style="margin-bottom:8px;">Nenhum item.</div>`;
-  return `<div style="margin-bottom:8px;">${items.map(i=>`
-    <span class="chip">${escapeHtml(i.nome)}${showPrice? ' · '+brl(i.preco):''}
-      <button data-action="removeGeneric" data-fn="${removeAction}" data-id="${i.id}" style="border:none;background:none;color:var(--stamp);margin-left:6px;cursor:pointer;">✕</button>
-    </span>`).join('')}</div>`;
-}
-
-/* ============================= RENDER: PEDIDOS ============================= */
-function renderPedidos(){
-  let html = `<div class="section-title">📝 Encomendas de souvenir</div>`;
-  html += `<button class="btn btn-primary" style="margin-bottom:14px;" data-action="openPedido">+ Nova encomenda</button>`;
-  html += `<div class="row" style="margin-bottom:12px;">
-    <button class="btn ${state.pedidosFiltro==='pendentes'?'btn-dark':''}" data-action="setPedidosFiltro" data-f="pendentes">Pendentes (${state.pedidosSouvenir.filter(p=>p.status==='pendente').length})</button>
-    <button class="btn ${state.pedidosFiltro==='retirados'?'btn-dark':''}" data-action="setPedidosFiltro" data-f="retirados">Retirados (${state.pedidosSouvenir.filter(p=>p.status==='retirado').length})</button>
-  </div>`;
-  const lista = state.pedidosSouvenir.filter(p=> state.pedidosFiltro==='pendentes' ? p.status==='pendente' : p.status==='retirado');
-  if(lista.length===0){
-    html += `<div class="empty-state">Nenhuma encomenda ${state.pedidosFiltro==='pendentes'?'pendente':'retirada'}.</div>`;
-  } else {
-    html += lista.map(p=>`<div class="jaleco-row">
-      <div>
-        <div style="font-weight:700;">${escapeHtml(p.nome)} <span class="muted" style="font-weight:400;">${escapeHtml(p.telefone||'')}</span></div>
-        <div class="muted" style="font-size:.78rem;">${p.itens.map(i=>`${i.qtd}x ${escapeHtml(i.nome)}`).join(', ')} · ${brl(p.total)}</div>
-        <div class="muted" style="font-size:.72rem;">Pedido em ${fmtDateTime(p.criadoEm)} ${p.retiradoEm? '· Retirado em '+fmtDateTime(p.retiradoEm):''}</div>
-      </div>
-      ${p.status==='pendente'? `<button class="btn btn-sm btn-sage" data-action="retirarPedido" data-id="${p.id}">Marcar como retirado</button>` :
-        `<span class="badge badge-sage">${p.pago?'Pago':'Não pago'}</span>`}
-    </div>`).join('');
-  }
-  return html;
-}
-
-/* ============================= RENDER: FECHAMENTO ============================= */
-function renderFechamento(){
-  const r = fechamentoResumo();
-  let html = `<div class="section-title">💰 Fechamento de caixa — hoje</div>`;
-  html += `<div class="kv"><span>Total vendido</span><span class="v">${brl(r.totalGeral)}</span></div>`;
-  html += `<div class="kv"><span>— em Dinheiro</span><span class="v">${brl(r.porForma.dinheiro)}</span></div>`;
-  html += `<div class="kv"><span>— em Pix</span><span class="v">${brl(r.porForma.pix)}</span></div>`;
-  html += `<div class="kv"><span>Impressões grátis (membros)</span><span class="v">${r.impressoesGratis}</span></div>`;
-  html += `<div class="kv"><span>Impressões pagas (externos)</span><span class="v">${r.impressoesPagas} · ${brl(r.arrecadadoImpressao)}</span></div>`;
-  html += `<div class="kv"><span>Jalecos devolvidos hoje</span><span class="v">${r.jalecosDevolvidosHoje}</span></div>`;
-  html += `<div class="kv"><span>Jalecos pagos hoje</span><span class="v">${r.jalecosPagosHoje} · ${brl(r.arrecadadoJaleco)}</span></div>`;
-  html += `<div class="kv"><span>Encomendas ainda pendentes</span><span class="v">${r.pedidosPendentes}</span></div>`;
-  html += `<button class="btn btn-primary" style="margin-top:16px;" data-action="downloadCSV">⬇ Baixar CSV para Fluxo de Caixa</button>`;
-  html += `<div class="muted" style="margin-top:6px;">Formato: colunas separadas por vírgula — Data, Descrição, Categoria, Forma de Pagamento, Valor. Se a Plataforma VP esperar outro separador (ex: ponto e vírgula) ou outras colunas, me avisa que eu ajusto.</div>`;
-
-  html += `<div class="section-title" style="margin-top:26px;">💾 Backup deste aparelho</div>`;
-  html += `<div class="alert alert-warning">Como cada aparelho funciona sem rede, os dados <b>não se juntam sozinhos</b>. No fim do evento, exporte o backup de cada aparelho e importe todos num só (ou entregue pra Plataforma VP).</div>`;
-  html += `<div class="field" style="max-width:260px;"><label>Nome deste aparelho</label><input type="text" id="deviceNameInput" value="${escapeHtml(state.deviceName)}" placeholder="Ex: Caixa 1 - celular ICB" data-action-change="setDeviceName"></div>`;
-  html += `<div class="field" style="max-width:300px;"><label>Este aparelho é responsável por</label>
-    <select data-action-change="setResponsabilidade">
-      <option value="" ${!state.responsabilidade?'selected':''}>Não definido</option>
-      <option value="Açaí & Sundae" ${state.responsabilidade==='Açaí & Sundae'?'selected':''}>Açaí & Sundae</option>
-      <option value="Souvenirs" ${state.responsabilidade==='Souvenirs'?'selected':''}>Souvenirs</option>
-      <option value="Jaleco" ${state.responsabilidade==='Jaleco'?'selected':''}>Jaleco</option>
-      <option value="Impressão" ${state.responsabilidade==='Impressão'?'selected':''}>Impressão</option>
-      <option value="Tudo (aparelho único)" ${state.responsabilidade==='Tudo (aparelho único)'?'selected':''}>Tudo (aparelho único)</option>
-    </select>
-  </div>`;
-  html += `<div style="margin-top:10px;font-size:.82rem;opacity:.75;max-width:420px;">
-    ${online ? '🟢 Este aparelho está online — vendas, estoque de souvenirs, jalecos e encomendas sincronizam automaticamente com os outros aparelhos online.' : '⚪ Este aparelho está offline — tudo funciona normalmente aqui, e sincroniza sozinho quando a internet voltar.'}
-  </div>`;
-  html += `<div class="row" style="margin-top:10px;">
-    <button class="btn btn-dark" data-action="exportBackupBtn">⬇ Exportar backup (.json)</button>
-    <label class="btn" style="display:inline-flex;align-items:center;">⬆ Importar backup<input type="file" accept=".json" style="display:none" data-action-change="importBackupBtn"></label>
-  </div>`;
-  return html;
-}
-
-/* ============================= RECEIPT ============================= */
-function renderReceipt(){
-  return `<div class="receipt">
-    <div class="toggle-row">
-      <span>Cliente é membro da Farmácia Jr.</span>
-      <label class="switch"><input type="checkbox" ${state.membroAtivo?'checked':''} data-action-change="toggleMembroBtn"><span class="slider"></span></label>
-    </div>
-    <div class="section-title" style="margin-bottom:8px;">🧾 Recibo</div>
-    ${state.cart.length===0? `<div class="muted" style="font-size:.8rem;">Carrinho vazio.</div>` :
-      state.cart.map(i=>`<div class="item">
-        <div>${escapeHtml(i.nome)}<br><span class="muted">${brl(i.preco)} un.</span></div>
-        <div class="qty-ctrl">
-          <button data-action="cartQty" data-id="${i.cartId}" data-delta="-1">−</button>
-          <span>${i.qtd}</span>
-          <button data-action="cartQty" data-id="${i.cartId}" data-delta="1">+</button>
-          <button data-action="cartRemove" data-id="${i.cartId}" style="color:var(--stamp);border:none;background:none;">✕</button>
-        </div>
-      </div>`).join('')}
-    <div class="total-row"><span>TOTAL</span><span>${brl(cartTotal())}</span></div>
-    <div class="row" style="margin-top:12px;">
-      <button class="btn btn-primary" style="flex:1;" ${state.cart.length===0?'disabled':''} data-action="finalizar" data-forma="dinheiro">Dinheiro</button>
-      <button class="btn btn-primary" style="flex:1;" ${state.cart.length===0?'disabled':''} data-action="finalizar" data-forma="pix">Pix</button>
-    </div>
-  </div>`;
-}
-
-/* ============================= MODALS ============================= */
-function renderModal(){
-  const {type, payload} = state.modal;
-  let inner = '';
-  if(type==='emprestimo'){
-    inner = `<h3>Emprestar jaleco</h3>
-      <div class="muted" style="margin-bottom:10px;">Valor do empréstimo: <b>${brl(state.catalog.jalecoPreco||0)}</b></div>
-      <div class="field"><label>Nome</label><input type="text" id="m_nome"></div>
-      <div class="field"><label>Telefone</label><input type="tel" id="m_telefone"></div>
-      <div class="field"><label>Período</label><input type="text" id="m_periodo" placeholder="Ex: 5º período"></div>
-      <div class="row">
-        <div class="field"><label>Pagamento</label><select id="m_pagamento"><option value="antecipado">Pago antecipado</option><option value="na_devolucao">Vai pagar na devolução</option></select></div>
-        <div class="field"><label>Forma</label><select id="m_forma"><option value="dinheiro">Dinheiro</option><option value="pix">Pix</option></select></div>
-      </div>
-      <div class="row">
-        <div class="field"><label>Horário retirada</label><input type="datetime-local" id="m_retirada" value="${todayLocalDateInput()}"></div>
-        <div class="field"><label>Previsão devolução</label><input type="datetime-local" id="m_previsao"></div>
-      </div>
-      <div class="row" style="margin-top:8px;">
-        <button class="btn btn-ghost" data-action="closeModalBtn">Cancelar</button>
-        <button class="btn btn-primary" data-action="confirmEmprestimo" data-id="${payload.jalecoId}">Confirmar empréstimo</button>
-      </div>`;
-  } else if(type==='confirmarPagamentoJaleco'){
-    const jl = state.jalecos.find(x=>x.id===payload.jalecoId);
-    const valorDevido = jl && jl.current ? jl.current.valor : state.catalog.jalecoPreco;
-    inner = `<h3>Pagamento recebido?</h3>
-      <div class="muted" style="margin-bottom:14px;">Esse jaleco estava marcado como "vai pagar na devolução". Confirme que o pagamento de <b>${brl(valorDevido||0)}</b> foi recebido antes de encerrar.</div>
-      <div class="row">
-        <button class="btn btn-ghost" data-action="closeModalBtn">Cancelar</button>
-        <button class="btn btn-sage" data-action="confirmarDevolucaoPaga" data-id="${payload.jalecoId}">✓ Pagamento recebido</button>
-      </div>`;
-  } else if(type==='confirmarPagamentoPedido'){
-    inner = `<h3>Pagamento recebido?</h3>
-      <div class="muted" style="margin-bottom:14px;">Essa encomenda estava marcada como "vai pagar na retirada". Confirme o pagamento antes de entregar.</div>
-      <div class="row">
-        <button class="btn btn-ghost" data-action="closeModalBtn">Cancelar</button>
-        <button class="btn btn-sage" data-action="confirmarPedidoPago" data-id="${payload.pedidoId}">✓ Pagamento recebido</button>
-      </div>`;
-  } else if(type==='pedido'){
-    const souvenirs = state.catalog.souvenirs;
-    inner = `<h3>Nova encomenda</h3>
-      <div class="field"><label>Nome do comprador</label><input type="text" id="p_nome"></div>
-      <div class="field"><label>Telefone</label><input type="tel" id="p_telefone"></div>
-      <div class="field"><label>Item</label>
-        <select id="p_item">${souvenirs.map(s=>`<option value="${s.id}" ${payload.souvenirId===s.id?'selected':''}>${escapeHtml(s.nome)} — ${brl(s.preco)}</option>`).join('')}</select>
-      </div>
-      <div class="field"><label>Quantidade</label><input type="number" id="p_qtd" min="1" value="1"></div>
-      <div class="row">
-        <div class="field"><label>Pagamento</label><select id="p_pagamento"><option value="antecipado">Pago antecipado</option><option value="na_retirada">Vai pagar na retirada</option></select></div>
-        <div class="field"><label>Forma</label><select id="p_forma"><option value="dinheiro">Dinheiro</option><option value="pix">Pix</option></select></div>
-      </div>
-      <div class="row" style="margin-top:8px;">
-        <button class="btn btn-ghost" data-action="closeModalBtn">Cancelar</button>
-        <button class="btn btn-primary" data-action="confirmPedido">Registrar encomenda</button>
-      </div>`;
-  }
-  return `<div class="modal-overlay" data-action="overlayClick"><div class="modal" onclick="event.stopPropagation()">${inner}</div></div>`;
-}
-
-/* ============================= EVENT BINDING ============================= */
-function bindGlobalEvents(){
-  document.querySelectorAll('[data-action]').forEach(el=>{
-    el.onclick = (e)=>{
-      const action = el.getAttribute('data-action');
-      handleAction(action, el, e);
-    };
-  });
-  document.querySelectorAll('[data-action-change]').forEach(el=>{
-    el.onchange = (e)=>{
-      const action = el.getAttribute('data-action-change');
-      handleChangeAction(action, el, e);
-    };
-  });
-  // device name first-run prompt
-  if(!state.deviceName){
-    const nome = prompt('Primeiro uso neste aparelho — dá um nome pra ele (ex: "Caixa 1 - celular ICB"):');
-    if(nome){ state.deviceName = nome.trim(); saveState(); render(); }
-  }
-}
-
-function handleAction(action, el, e){
-  const id = el.getAttribute('data-id');
-  switch(action){
-    case 'setTab': setTab(el.getAttribute('data-tab')); break;
-    case 'tentarDesbloquearEstoque': tentarDesbloquearEstoque(); break;
-    case 'selectTamanho': selectTamanho(id); break;
-    case 'toggleAdicional': toggleAdicional(id); break;
-    case 'addAcai': addAcaiToCart(); break;
-    case 'selectSabor': selectSabor(id); break;
-    case 'addSude': addSudeToCart(); break;
-    case 'comprarSouvenir': comprarSouvenirAgora(id); break;
-    case 'openPedido': openModal('pedido', {souvenirId:id||null}); break;
-    case 'addJalecoBtn': {
-      const numero = document.getElementById('novoJalecoNumero').value.trim();
-      const tamanho = document.getElementById('novoJalecoTamanho').value.trim();
-      addJaleco(numero, tamanho);
-      break;
-    }
-    case 'removeJalecoBtn': removeJaleco(id); break;
-    case 'openEmprestimo': openModal('emprestimo', {jalecoId:id}); break;
-    case 'devolverJaleco': iniciarDevolucao(id); break;
-    case 'toggleHistoricoJaleco': state.jalecoHistoricoAberto = !state.jalecoHistoricoAberto; render(); break;
-    case 'setTipoImpressao': window.__tipoImpressao = el.getAttribute('data-tipo'); render(); break;
-    case 'addImpressaoBtn': {
-      const paginas = document.getElementById('paginasImpressao').value;
-      const tipo = window.__tipoImpressao || 'pb';
-      const nomeEl = document.getElementById('nomeExternoImpressao');
-      addImpressaoToCart(paginas, tipo, nomeEl? nomeEl.value.trim() : null);
-      break;
-    }
-    case 'addTamanhoBtn': {
-      const nome = document.getElementById('novoTamanhoNome').value.trim();
-      const preco = document.getElementById('novoTamanhoPreco').value;
-      addTamanhoAcai(nome, preco);
-      break;
-    }
-    case 'removeGeneric': {
-      const fn = el.getAttribute('data-fn');
-      window[fn](id);
-      break;
-    }
-    case 'addAdicionalBtn': {
-      const nome = document.getElementById('novoAdicionalNome').value.trim();
-      const preco = document.getElementById('novoAdicionalPreco').value;
-      addAdicionalAcai(nome, preco);
-      break;
-    }
-    case 'addSaborBtn': {
-      const nome = document.getElementById('novoSaborNome').value.trim();
-      addSaborSude(nome);
-      break;
-    }
-    case 'adjustEstoque': adjustSouvenirEstoque(id, parseInt(el.getAttribute('data-delta'),10)); break;
-    case 'removeSouvenirBtn': removeSouvenir(id); break;
-    case 'addSouvenirBtn': {
-      const nome = document.getElementById('novoSouvenirNome').value.trim();
-      const preco = document.getElementById('novoSouvenirPreco').value;
-      const estoque = document.getElementById('novoSouvenirEstoque').value;
-      const desconto = document.getElementById('novoSouvenirDesconto').value;
-      addSouvenirManual(nome, preco, estoque, desconto);
-      break;
-    }
-    case 'setPedidosFiltro': state.pedidosFiltro = el.getAttribute('data-f'); render(); break;
-    case 'retirarPedido': iniciarRetirada(id); break;
-    case 'downloadCSV': downloadCSVFechamento(); break;
-    case 'exportBackupBtn': exportBackup(); break;
-    case 'cartQty': changeCartQty(id, parseInt(el.getAttribute('data-delta'),10)); break;
-    case 'cartRemove': removeFromCart(id); break;
-    case 'finalizar': finalizarVenda(el.getAttribute('data-forma')); break;
-    case 'closeModalBtn': closeModal(); break;
-    case 'overlayClick': if(e.target===el) closeModal(); break;
-    case 'confirmEmprestimo': {
-      const data = {
-        nome: document.getElementById('m_nome').value.trim(),
-        telefone: document.getElementById('m_telefone').value.trim(),
-        periodo: document.getElementById('m_periodo').value.trim(),
-        pagamento: document.getElementById('m_pagamento').value,
-        formaPagamento: document.getElementById('m_forma').value,
-        horaRetirada: document.getElementById('m_retirada').value ? new Date(document.getElementById('m_retirada').value).toISOString() : nowISO(),
-        horaPrevista: document.getElementById('m_previsao').value ? new Date(document.getElementById('m_previsao').value).toISOString() : ''
-      };
-      submitEmprestimo(id, data);
-      break;
-    }
-    case 'confirmarDevolucaoPaga': concluirDevolucao(id, true); break;
-    case 'confirmarPedidoPago': concluirRetirada(id, true); break;
-    case 'confirmPedido': {
-      const souvenirId = document.getElementById('p_item').value;
-      const sv = state.catalog.souvenirs.find(s=>s.id===souvenirId);
-      const qtd = Math.max(1, parseInt(document.getElementById('p_qtd').value,10)||1);
-      const data = {
-        nome: document.getElementById('p_nome').value.trim(),
-        telefone: document.getElementById('p_telefone').value.trim(),
-        itens: sv? [{souvenirId:sv.id, nome:sv.nome, qtd, precoUnit:sv.preco}] : [],
-        pagamento: document.getElementById('p_pagamento').value,
-        formaPagamento: document.getElementById('p_forma').value
-      };
-      submitPedido(data);
-      break;
-    }
-  }
-}
-
-function handleChangeAction(action, el){
-  const id = el.getAttribute('data-id');
-  switch(action){
-    case 'updateSudePreco': updateSudePreco(el.value); break;
-    case 'updateImpressaoColorido': updateImpressaoPreco('colorido', el.value); break;
-    case 'updateImpressaoPB': updateImpressaoPreco('pb', el.value); break;
-    case 'updateJalecoPreco': updateJalecoPreco(el.value); break;
-    case 'updateEstoqueSenha': updateEstoqueSenha(el.value); break;
-    case 'updateSouvenirPreco': updateSouvenirField(id, 'preco', el.value); break;
-    case 'updateSouvenirDesconto': updateSouvenirField(id, 'descontoMembro', el.value); break;
-    case 'uploadSouvenirCsv': handleSouvenirUpload(el); break;
-    case 'toggleMembroBtn': toggleMembro(); break;
-    case 'setDeviceName': state.deviceName = el.value.trim(); saveState(); render(); break;
-    case 'setResponsabilidade': state.responsabilidade = el.value; saveState(); render(); break;
-    case 'exportBackupBtn': exportBackup(); break;
-    case 'importBackupBtn': importBackup(el); break;
-  }
-}
-
-/* ============================= INIT ============================= */
-render();
-
-if('serviceWorker' in navigator){
-  window.addEventListener('load', ()=>{
-    navigator.serviceWorker.register('./sw.js').catch(err=>console.error('SW falhou:', err));
-  });
-}
-</script>
-</body>
-</html>
+    ${!membro? `<div class="field"><label>Nome (cliente externo)</label><input type="text" id="nomeExterno
