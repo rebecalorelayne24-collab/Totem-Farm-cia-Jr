@@ -1,4 +1,4 @@
-const CACHE_NAME = "totem-fjr-v13";
+const CACHE_NAME = "totem-fjr-v15";
 const CORE_ASSETS = [
   "./index.html",
   "./manifest.json",
