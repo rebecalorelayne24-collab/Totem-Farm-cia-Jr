@@ -1245,8 +1245,8 @@ function renderImpressao(){
       <button class="btn ${window.__tipoImpressao!=='cor'?'btn-dark':''}" data-action="setTipoImpressao" data-tipo="pb">P&B ${membro?'· Grátis':'· '+brl(state.catalog.impressaoPBPreco)+'/pág'}</button>
       <button class="btn ${window.__tipoImpressao==='cor'?'btn-dark':''}" data-action="setTipoImpressao" data-tipo="cor">Colorido · ${brl(state.catalog.impressaoColoridoPreco)}/pág</button>
     </div>
-    ${!membro? `<div class="field"><label>Nome (cliente externo)</label><input type="text" id="nomeExterno
-        <button class="btn btn-primary btn-block" data-action="addImpressaoBtn">Adicionar ao carrinho</button>
+    ${!membro? `<div class="field"><label>Nome (cliente externo)</label><input type="text" id="nomeExternoImpressao" placeholder="Nome do aluno"></div>` : ''}
+    <button class="btn btn-primary btn-block" data-action="addImpressaoBtn">Adicionar ao carrinho</button>
   </div>`;
 }
 
